@@ -70,6 +70,16 @@ class GRPOConsumer(BaseConsumer):
         )
         path = model_config.pop("path")
         self.policy_model = AutoModelForCausalLM.from_pretrained(path, **model_config)
+        if grpo_config.get("lora_rank", 0) > 0:
+            from peft import LoraConfig, get_peft_model
+            lora_config = LoraConfig(
+                task_type="CAUSAL_LM",
+                r=grpo_config.get("lora_rank", 8),
+                lora_alpha=grpo_config.get("lora_alpha", 16),
+                target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            )
+            # self.policy_model.add_adapter(lora_config)
+            self.policy_model = get_peft_model(self.policy_model, lora_config)
         self.policy_model.train()
         self.policy_model.gradient_checkpointing_enable()
         self.optimizer = HybridAdam(self.policy_model.parameters(), lr=grpo_config.get("lr", 1e-6))
@@ -134,6 +144,10 @@ class GRPOConsumer(BaseConsumer):
 
     def setup(self):
         super().setup()
+        if self.grpo_config.get("lora_rank", 0) > 0:
+            assert self.plugin.support_lora(), "LoRA is not supported by the current plugin."
+            self.plugin.lora_enabled = True
+            self.plugin.logger.warning("You have enabled LoRa training. Please check the hyperparameters such as lr", ranks=[0])
         if (not self.plugin.pp_size > 1 and self.rank == 0) or (
             self.plugin.pp_size > 1
             and self.booster.plugin.stage_manager.is_last_stage()
@@ -151,6 +165,11 @@ class GRPOConsumer(BaseConsumer):
         self.policy_model, self.optimizer, _, _, self.lr_scheduler = self.booster.boost(
             self.policy_model, self.optimizer, lr_scheduler=self.lr_scheduler
         )
+        if self.grpo_config.get("lora_rank", 0) > 0:
+            def make_inputs_require_grads(module, input, output):
+                output.requires_grad_(True)
+            self.policy_model.unwrap().get_input_embeddings().register_forward_hook(make_inputs_require_grads)
+
         if self.policy_loss_fn.beta > 0:
             self.reference_model, *_ = self.booster.boost(self.reference_model)
         self.plugin.logger.set_level("ERROR")
@@ -526,4 +545,9 @@ class GRPOConsumer(BaseConsumer):
         model = self.policy_model.unwrap()
         state_dict = model.state_dict()
         state_dict["consumer_global_step"] = torch.tensor([self.global_step], device=self.device)
+        if self.grpo_config.get("lora_rank", 0) > 0:
+            state_dict["lora_config"] = torch.tensor([
+                self.grpo_config.get("lora_rank", 8),
+                self.grpo_config.get("lora_alpha", 16),
+            ], device=self.device)
         return state_dict

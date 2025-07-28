@@ -162,6 +162,9 @@ if __name__ == "__main__":
         default=0,
         help="Number of producer batches to rollout to fill the data buffer before trainer starts to decrease bubble time",
     )
+    parser.add_argument("-lrr", "--lora-rank", type=int, default=0, help="Rank for LoRA adaptation.")
+    parser.add_argument("-lra", "--lora-alpha", type=int, default=16, help="Alpha scaling for LoRA adaptation.")
+
 
     # Logging/Checkpointing parameters
     parser.add_argument("-si", "--save-interval", type=int, default=100, help="Interval for saving checkpoints.")
@@ -250,7 +253,7 @@ if __name__ == "__main__":
     elif args.backend == "vllm":
         inference_model_config.update(
             dict(
-                gpu_memory_utilization=0.7,
+                gpu_memory_utilization=0.9,
                 enforce_eager=True,
                 enable_chunked_prefill=True,
                 max_model_len=args.max_new_tokens + args.max_prompt_tokens,
@@ -300,6 +303,8 @@ if __name__ == "__main__":
                 if args.reward_type == "think_answer_tags"
                 else None
             ),
+            "lora_rank": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
         }
     elif args.algo == "DAPO":
         # DAPO variant settings
@@ -329,6 +334,8 @@ if __name__ == "__main__":
                 if args.reward_type == "think_answer_tags"
                 else None
             ),
+            "lora_rank": args.lora_rank,
+            "lora_alpha": args.lora_alpha,
         }
     else:
         raise ValueError(f"Unsupported algorithm: {args.algo}")

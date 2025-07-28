@@ -349,6 +349,9 @@ class BaseProducer:
                             )
                             if "consumer_global_step" in state_dict:
                                 self.consumer_global_step = state_dict.pop("consumer_global_step").item()
+                            if "lora_config" in state_dict:
+                                lora_rank, lora_alpha = state_dict.pop("lora_config").tolist()
+                                state_dict = merge_lora_weights(state_dict, lora_rank, lora_alpha)
                             self.load_state_dict(state_dict)
                     else:
                         print(
@@ -359,6 +362,9 @@ class BaseProducer:
                         )
                         if "consumer_global_step" in state_dict:
                             self.consumer_global_step = state_dict.pop("consumer_global_step").item()
+                        if "lora_config" in state_dict:
+                            lora_rank, lora_alpha = state_dict.pop("lora_config").tolist()
+                            state_dict = merge_lora_weights(state_dict, lora_rank, lora_alpha)
                         self.load_state_dict(state_dict)
                     self.profiler.exit("sync_model")
                     del state_dict
@@ -475,3 +481,57 @@ class SimpleProducer(BaseProducer):
 
     def load_state_dict(self, state_dict):
         self.model.load_state_dict(state_dict)
+
+
+def merge_lora_weights(state_dict: dict[str, torch.Tensor], lora_rank: int, lora_alpha: int):
+    """
+    Merge the LoRA weights into the base model weights.
+
+    Args:
+        state_dict (dict): The state dict of the model, including the base model weights and the LoRA weights.
+
+    Returns:
+        dict: The merged state dict of the model.
+    """
+    merged_dict = {}
+    lora_a_weight_dict = {}
+    lora_b_weight_dict = {}
+    base_weight_dict = {}
+    base_bias_dict = {}
+    for key, value in state_dict.items():
+        if ".lora_A.default.weight" in key:
+            prefix = key.split(".lora_A.default.weight")[0]
+            lora_a_weight_dict[prefix] = value
+        elif ".lora_B.default.weight" in key:
+            prefix = key.split(".lora_B.default.weight")[0]
+            lora_b_weight_dict[prefix] = value
+        elif ".base_layer.weight" in key:
+            prefix = key.split(".base_layer.weight")[0]
+            base_weight_dict[prefix] = value
+        elif ".base_layer.bias" in key:
+            prefix = key.split(".base_layer.bias")[0]
+            base_bias_dict[prefix] = value
+        else:
+            merged_dict[key] = value
+
+    assert set(lora_a_weight_dict.keys()) == set(lora_b_weight_dict.keys()), \
+        "The LoRA A and B weight dicts have different keys."
+
+    assert set(lora_a_weight_dict.keys()) == set(base_weight_dict.keys()), \
+        "The LoRA A and base weight dicts have different keys."
+
+    assert len(set(base_bias_dict.keys()) - set(base_weight_dict.keys())) == 0, \
+        "There exists base bias weights that are not in the base weight dict."
+
+    scaling = lora_alpha / lora_rank
+
+    for prefix, base_weight in base_weight_dict.items():
+        lora_a_weight = lora_a_weight_dict[prefix]
+        lora_b_weight = lora_b_weight_dict[prefix]
+        # W' = W + (B @ A) * scaling
+        merged_weight = base_weight + (lora_b_weight @ lora_a_weight) * scaling
+        merged_dict[f"{prefix}.weight"] = merged_weight
+        if prefix in base_bias_dict:
+            merged_dict[f"{prefix}.bias"] = base_bias_dict[prefix]
+
+    return merged_dict
