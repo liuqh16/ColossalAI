@@ -333,10 +333,11 @@ class Qwen2Policy(Policy):
             return
 
         stage_manager = self.pipeline_stage_manager
-        if self.model.__class__.__name__ == "Qwen2Model":
-            module = self.model
-        else:
-            module = self.model.model
+        module = self.model
+        if module.__class__.__name__.startswith("PeftModel"):
+            module = module.get_base_model()
+        if module.__class__.__name__ != "Qwen2Model":
+            module = module.model
 
         if stage_manager.is_interleave:
             layers_per_stage = stage_manager.distribute_layers(len(module.layers))
@@ -363,10 +364,11 @@ class Qwen2Policy(Policy):
         """Get pipeline layers for current stage."""
         assert self.pipeline_stage_manager is not None
 
-        if self.model.__class__.__name__ == "Qwen2Model":
-            module = self.model
-        else:
-            module = self.model.model
+        module = self.model
+        if module.__class__.__name__.startswith("PeftModel"):
+            module = module.get_base_model()
+        if module.__class__.__name__ != "Qwen2Model":
+            module = module.model
 
         stage_manager = self.pipeline_stage_manager
 
@@ -490,11 +492,19 @@ class Qwen2ForCausalLMPolicy(Qwen2Policy):
         return held_layers
 
     def get_shared_params(self) -> List[Dict[int, Tensor]]:
-        qwen2_model = self.model.model
+        module = self.model
+        if module.__class__.__name__.startswith("PeftModel"):
+            module = module.get_base_model()
+        if module.__class__.__name__ != "Qwen2Model":
+            module = module.model
+        qwen2_model = module
         if self.pipeline_stage_manager and self.pipeline_stage_manager.num_stages > 1:
             if (
                 id(qwen2_model.embed_tokens.weight) == id(self.model.lm_head.weight)
                 and self.pipeline_stage_manager.num_stages > 1
+                # Only share params if they are trainable
+                and qwen2_model.embed_tokens.weight.requires_grad
+                and self.model.lm_head.weight.requires_grad
             ):
                 # tie weights
                 return [

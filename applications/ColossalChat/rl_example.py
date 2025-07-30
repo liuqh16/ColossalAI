@@ -253,7 +253,7 @@ if __name__ == "__main__":
     elif args.backend == "vllm":
         inference_model_config.update(
             dict(
-                gpu_memory_utilization=0.9,
+                gpu_memory_utilization=0.7,
                 enforce_eager=True,
                 enable_chunked_prefill=True,
                 max_model_len=args.max_new_tokens + args.max_prompt_tokens,
